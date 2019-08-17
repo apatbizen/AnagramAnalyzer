@@ -5,18 +5,14 @@ using System.Linq;
 
 namespace AnagramAnalyzer {
 
-    public class AnagramDecoder<T> {
+    public class AnagramDecoder<T> where T:IWordItem {
         #region 【フィールド】
-
-        private readonly Func<T, string> getStringFunction;
-
         private readonly CharacterRanker ranker = new CharacterRanker();
 
-        //private readonly Dictionary<UnorderChars, int> failsBorder = new Dictionary<UnorderChars, int>();
-        private readonly Dictionary<UnorderChars, int> failsBorder = new Dictionary<UnorderChars, int>();
-
         /// <summary>単語オブジェクトとそれに対応するUnorderChars</summary>
-        private WordNode<T>[] sortedWords;
+        private Dictionary<T, UnorderChars> sortedWords;
+
+        private List<T> headWords = new List<T>();
 
         #endregion
 
@@ -24,13 +20,23 @@ namespace AnagramAnalyzer {
         /// <summary>コンストラクタ</summary>
         /// <param name="words">単語オブジェクト群</param>
         /// <param name="getCharsFunction">かな表記の文字列を単語オブジェクトから得るための関数</param>
-        public AnagramDecoder(IEnumerable<T> words, Func<T, string> getCharsFunction) {
-            this.getStringFunction = getCharsFunction;
-            words.Select(getCharsFunction).ToList().ForEach(this.ranker.CheckIn);
-            this.sortedWords = words.Select(x => new WordNode<T>(x, new UnorderChars(getCharsFunction(x), this.ranker)))
-                                    .OrderBy(x => x.Chars.PrimaryChar, this.ranker)
-                                    .ToArray();
+        public AnagramDecoder(IEnumerable<T> words) {
+            words.Select(x=>x.Kana).ToList().ForEach(this.ranker.CheckIn);
+            this.sortedWords = new Dictionary<T, UnorderChars>();
+            foreach (var word in words) {
+                this.WordCount++;
+                this.sortedWords.Add(word, new UnorderChars(word.Kana, this.ranker));
+
+                headWords.RemoveAll(x => word.FindNexts().Contains(x));
+                headWords.Add(word);
+            }
         }
+
+        /// <summary>登録されている単語数</summary>
+        public int WordCount { get; private set; } = 0;
+
+        /// <summary>検索を開始する単語数</summary>
+        public int HeadCount => this.headWords.Count();
         #endregion
 
         #region 【メソッド】Analyze アナグラムとして指定した文章を作ることのできる単語の組み合わせを列挙する
@@ -42,54 +48,21 @@ namespace AnagramAnalyzer {
         public IEnumerable<IEnumerable<T>> Analyze(string v) {
             if (string.IsNullOrEmpty(v)) return Enumerable.Empty<IEnumerable<T>>();
 
-            //集計処理と並べ替え
             var target = new UnorderChars(v, this.ranker);
-            return this.Analyze(target, Enumerable.Empty<T>(), 0);
+            return this.headWords.SelectMany(x=>this.Analyze(target, x));
         }
 
-        private IEnumerable<IEnumerable<T>> Analyze(UnorderChars chars, IEnumerable<T> currentInput, int skipCount) {
-            if (chars.IsEmpty) {
-                yield return currentInput;
-                yield break;
-            }
+        private IEnumerable<IEnumerable<T>> Analyze(UnorderChars chars, T rootItem) {
+            var uoc = sortedWords[rootItem];
+            if (!chars.IsInclude(uoc)) return Enumerable.Empty<IEnumerable<T>>();
 
-#if SHOW
-            Console.WriteLine($"採用：{string.Join(" + ", currentInput.Select(x => this.getStringFunction(x)))}\t残り：{chars.ToString()}、単語数：{sortedWords.Skip(skipCount).Where(x => x.Chars.PrimaryChar == chars.PrimaryChar).Count()}");
-#endif
+            var myselfArray = new[] { rootItem };
+            var subtracted = chars.Subtract(uoc);
+            if (subtracted.IsEmpty) return new List<IEnumerable<T>> { myselfArray };
 
-            if (this.failsBorder.ContainsKey(chars) && this.failsBorder[chars] <= skipCount) yield break;
-
-            int i = skipCount;
-            int count = 0;
-
-            while (i < this.sortedWords.Length && this.sortedWords[i].Chars.PrimaryChar != chars.PrimaryChar) i++;
-            while (i < this.sortedWords.Length && this.sortedWords[i].Chars.PrimaryChar == chars.PrimaryChar) {
-                var word = this.sortedWords[i++];
-                if (!chars.IsInclude(word.Chars)) continue;
-
-                var found = chars.Subtract(word.Chars);
-                var result = this.Analyze(found, currentInput.Concat(new[] { word.Body }), i);
-                foreach (var r in result) {
-                    yield return r;
-                    count++;
-                }
-            }
-
-            if (count == 0) {
-                if (this.failsBorder.ContainsKey(chars)) this.failsBorder[chars] = skipCount;
-                else this.failsBorder.Add(chars, skipCount);
-            }
+            return rootItem.FindNexts().SelectMany(x => this.Analyze(chars.Subtract(uoc), (T)x))
+                                 .Select(x=>myselfArray.Concat(x));
         }
         #endregion
-
-        private class WordNode<T2> {
-            public WordNode(T2 body, UnorderChars chars) {
-                Body = body;
-                Chars = chars;
-            }
-
-            public T2 Body { get; }
-            public UnorderChars Chars { get; }
-        }
     }
 }
